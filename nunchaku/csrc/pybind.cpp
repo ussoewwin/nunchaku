@@ -5,6 +5,11 @@
 #include "ops.h"
 #include "utils.h"
 #include <torch/extension.h>
+#if defined(_MSC_VER)
+#undef __in
+#undef __out
+#undef __inout
+#endif
 #include "interop/torch.h"
 #include <pybind11/pybind11.h>
 

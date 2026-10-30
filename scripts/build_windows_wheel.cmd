@@ -21,6 +21,12 @@ if "%TORCH_VERSION%"=="2.8" (
 ) else if "%TORCH_VERSION%"=="2.10" (
     set TORCHVISION_VERSION=0.25
     set TORCHAUDIO_VERSION=2.10
+) else if "%TORCH_VERSION%"=="2.14" (
+    set TORCHVISION_VERSION=0.29
+    set TORCHAUDIO_VERSION=2.14
+) else if "%TORCH_VERSION%"=="2.15" (
+    set TORCHVISION_VERSION=0.30
+    set TORCHAUDIO_VERSION=2.15
 ) else (
     echo Unsupported TORCH_VERSION: %TORCH_VERSION%
     exit /b 1

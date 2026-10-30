@@ -8,6 +8,9 @@ requires = [
   "wheel",
 ]
 
+[tool.setuptools]
+include-package-data = true
+
 [project]
 name = "nunchaku"
 requires-python = ">=3.10"

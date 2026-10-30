@@ -218,3 +218,22 @@ dev/
 metrics.json
 *use_count.txt
 *use_record.txt
+
+# Absolute Protection & Build Artifacts
+反省文/
+scratch/
+*.bak*
+*.tmp
+temp/
+tmp/
+build_wheel_py313.*
+build_wheel_py314.*
+auto_build_wheel.*
+auto_build_wheel_*
+build_windows_wheel.log
+build_linux_wheel_py314.*
+verify_linux_wheel.*
+.tmp_build_linux.sh
+
+
+

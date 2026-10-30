@@ -1,5 +1,10 @@
 #include "torch.h"
 
+#if defined(_MSC_VER)
+#undef __in
+#undef __out
+#undef __inout
+#endif
 #include <ATen/cuda/CUDAContext.h>
 
 using spdlog::fmt_lib::format;

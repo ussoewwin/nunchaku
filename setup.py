@@ -25,8 +25,37 @@ class CustomBuildExtension(BuildExtension):
         super().build_extensions()
 
 
+def get_cuda_home() -> str:
+    cuda_home = os.environ.get("CUDA_HOME") or os.environ.get("CUDA_PATH")
+    if cuda_home and os.path.exists(os.path.join(cuda_home, "bin", "nvcc.exe" if sys.platform == "win32" else "nvcc")):
+        return cuda_home
+    if CUDA_HOME and os.path.exists(os.path.join(CUDA_HOME, "bin", "nvcc.exe" if sys.platform == "win32" else "nvcc")):
+        return CUDA_HOME
+    cuda_base = r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA"
+    if os.path.exists(cuda_base):
+        versions = sorted(
+            [d for d in os.listdir(cuda_base) if os.path.exists(os.path.join(cuda_base, d, "bin", "nvcc.exe"))],
+            reverse=True,
+        )
+        if versions:
+            return os.path.join(cuda_base, versions[0])
+    for p in ["/usr/local/cuda", "/usr/local/cuda-13.4", "/usr/local/cuda-13.2"]:
+        if os.path.exists(os.path.join(p, "bin", "nvcc")):
+            return p
+    return CUDA_HOME or ""
+
+
+ACTIVE_CUDA_HOME = get_cuda_home()
+if ACTIVE_CUDA_HOME:
+    os.environ["CUDA_HOME"] = ACTIVE_CUDA_HOME
+    os.environ["CUDA_PATH"] = ACTIVE_CUDA_HOME
+    import torch.utils.cpp_extension
+    torch.utils.cpp_extension.CUDA_HOME = ACTIVE_CUDA_HOME
+
+
 def get_sm_targets() -> list[str]:
-    nvcc_path = os.path.join(CUDA_HOME, "bin/nvcc") if CUDA_HOME else "nvcc"
+    cuda_home = ACTIVE_CUDA_HOME
+    nvcc_path = os.path.join(cuda_home, "bin/nvcc") if cuda_home else "nvcc"
     try:
         nvcc_output = subprocess.check_output([nvcc_path, "--version"]).decode()
         match = re.search(r"release (\d+\.\d+), V(\d+\.\d+\.\d+)", nvcc_output)
@@ -38,8 +67,30 @@ def get_sm_targets() -> list[str]:
     except:
         raise Exception("nvcc not found")
 
+    support_sm90 = packaging_version.parse(nvcc_version) >= packaging_version.parse("11.8")
+    support_sm100 = packaging_version.parse(nvcc_version) >= packaging_version.parse("12.8")
     support_sm120 = packaging_version.parse(nvcc_version) >= packaging_version.parse("12.8")
     support_sm121 = packaging_version.parse(nvcc_version) >= packaging_version.parse("13.0")
+
+    torch_cuda_arch_list = os.getenv("TORCH_CUDA_ARCH_LIST", None)
+    if torch_cuda_arch_list:
+        raw_targets = re.split(r"[;,\s]+", torch_cuda_arch_list.strip())
+        ret = []
+        for t in raw_targets:
+            if not t:
+                continue
+            arch = t.replace("sm_", "").replace("compute_", "")
+            if "." in arch:
+                parts = arch.split(".")
+                arch = f"{parts[0]}{parts[1]}"
+            if arch == "120" and support_sm120:
+                arch = "120a"
+            elif arch == "121" and support_sm121:
+                arch = "121a"
+            if arch not in ret:
+                ret.append(arch)
+        if ret:
+            return ret
 
     install_mode = os.getenv("NUNCHAKU_INSTALL_MODE", "FAST")
     if install_mode == "FAST":
@@ -51,12 +102,16 @@ def get_sm_targets() -> list[str]:
                 sm = sm + "a"
             if sm in ["121"] and support_sm121:
                 sm = sm + "a"
-            assert sm in ["75", "80", "86", "89", "120a", "121a"], f"Unsupported SM {sm}"
+            assert sm in ["75", "80", "86", "89", "90", "100", "120a", "121a"], f"Unsupported SM {sm}"
             if sm not in ret:
                 ret.append(sm)
     else:
         assert install_mode == "ALL"
         ret = ["75", "80", "86", "89"]
+        if support_sm90:
+            ret.extend(["90"])
+        if support_sm100:
+            ret.extend(["100"])
         if support_sm120:
             ret.extend(["120a"])
         if support_sm121:
@@ -108,8 +163,28 @@ if __name__ == "__main__":
 
     assert len(sm_targets) > 0, "No SM targets found"
 
-    GCC_FLAGS = ["-DENABLE_BF16=1", "-DBUILD_NUNCHAKU=1", "-fvisibility=hidden", "-g", "-std=c++20", "-UNDEBUG", "-Og"]
-    MSVC_FLAGS = ["/DENABLE_BF16=1", "/DBUILD_NUNCHAKU=1", "/std:c++20", "/UNDEBUG", "/Zc:__cplusplus", "/FS"]
+    GCC_FLAGS = [
+        "-DENABLE_BF16=1",
+        "-DBUILD_NUNCHAKU=1",
+        "-fvisibility=hidden",
+        "-g",
+        "-std=c++20",
+        "-UNDEBUG",
+        "-Og",
+        "-Wno-error=template-body",
+        "-Wno-template-body",
+    ]
+    # Torch 2.13+ / CUDA 13.2 CCCL require MSVC standard-conforming preprocessor.
+    MSVC_FLAGS = [
+        "/DENABLE_BF16=1",
+        "/DBUILD_NUNCHAKU=1",
+        "/std:c++20",
+        "/UNDEBUG",
+        "/Zc:__cplusplus",
+        "/Zc:preprocessor",
+        "/FS",
+        "/Z7",
+    ]
     NVCC_FLAGS = [
         "-DENABLE_BF16=1",
         "-DBUILD_NUNCHAKU=1",
@@ -127,7 +202,7 @@ if __name__ == "__main__":
         "-U__CUDA_NO_BFLOAT16_CONVERSIONS__",
         "-U__CUDA_NO_BFLOAT162_OPERATORS__",
         "-U__CUDA_NO_BFLOAT162_CONVERSIONS__",
-        f"--threads={len(sm_targets)}",
+        *([] if os.name == "nt" else [f"--threads={len(sm_targets)}"]),
         "--expt-relaxed-constexpr",
         "--expt-extended-lambda",
         "--ptxas-options=--allow-expensive-optimizations=true",
@@ -139,7 +214,19 @@ if __name__ == "__main__":
     for target in sm_targets:
         NVCC_FLAGS += ["-gencode", f"arch=compute_{target},code=sm_{target}"]
 
-    NVCC_MSVC_FLAGS = ["-Xcompiler", "/Zc:__cplusplus", "-Xcompiler", "/FS", "-Xcompiler", "/bigobj"]
+    if sys.platform != "win32":
+        NVCC_FLAGS += ["-Xcompiler", "-Wno-error=template-body", "-Xcompiler", "-Wno-template-body"]
+
+    NVCC_MSVC_FLAGS = [
+        "-Xcompiler",
+        "/Zc:__cplusplus",
+        "-Xcompiler",
+        "/Zc:preprocessor",
+        "-Xcompiler",
+        "/FS",
+        "-Xcompiler",
+        "/bigobj",
+    ]
 
     nunchaku_extension = CUDAExtension(
         name="nunchaku._C",
@@ -189,10 +276,17 @@ if __name__ == "__main__":
         include_dirs=INCLUDE_DIRS,
     )
 
+    # Set NUNCHAKU_BUILD_WHEELS=1 to avoid embedding absolute paths in wheel
+    os.environ.setdefault("NUNCHAKU_BUILD_WHEELS", "1")
+
     setuptools.setup(
         name="nunchaku",
         version=version,
         packages=setuptools.find_packages(),
         ext_modules=[nunchaku_extension],
         cmdclass={"build_ext": CustomBuildExtension},
+        package_data={
+            "nunchaku": ["csrc/*.cpp", "csrc/*.h"],
+        },
+        include_package_data=True,
     )
